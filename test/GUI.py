@@ -42,6 +42,7 @@ class CameraThread(QThread):
     def stop(self):
         self._run_flag = False
         self.wait()
+    
 
 class EmotionApp(QMainWindow):
     def __init__(self):
@@ -53,8 +54,9 @@ class EmotionApp(QMainWindow):
         # --- CONFIG ---
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.yolo_path = 'runs/detect/yolov26_e20/weights/best.pt'
-        self.emotion_path = 'runs/PAttLite_emodata.pth' # Đường dẫn file model 112x112 vừa train
-        
+        #self.emotion_path = 'runs/PAttLite_emodata.pth' # Đường dẫn file model 112x112 vừa train
+        self.emotion_path = 'runs/PAtt_Test.pth' # File .h5 bạn đã train thành công
+
         # Đảm bảo thứ tự nhãn đúng với lúc train (7 nhãn)
         self.class_names = ['Angry', 'Disgust', 'Fear', 'Happy', 'Neutral', 'Sad', 'Surprise']
         self.prob_history = deque(maxlen=10)
@@ -83,6 +85,8 @@ class EmotionApp(QMainWindow):
             self.emotion_model.to(self.device)
             self.emotion_model.eval()
             print("AI Models Loaded: Grayscale 112x112 Mode")
+            print("Model:", next(self.emotion_model.parameters()).device)
+
         except Exception as e:
             print(f"Lỗi nạp mô hình: {e}")
 

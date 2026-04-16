@@ -1,136 +1,102 @@
-import sys
+import os
 import cv2
-import torch
-import torch.nn.functional as F
+import h5py
 import numpy as np
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout, 
-                             QLabel, QWidget)
-from PyQt6.QtGui import QImage, QPixmap, QFont
-from PyQt6.QtCore import Qt, QTimer
-from PIL import Image
-from torchvision import transforms
-from collections import deque
+from sklearn.model_selection import train_test_split
 
-# Import kiến trúc mô hình từ file model.py của bạn
-from test.model import PAttLite
+# =====================================================================
+# 1. KHU VỰC TÙY CHỈNH
+# =====================================================================
+DATASET_PATH = r"C:\Users\ThisPC\Desktop\data_emo\emooo\data\train" 
+OUTPUT_H5_FILE = "emodata_112x112_gray.h5"
 
-class EmotionCameraGUI(QMainWindow):
-    def __init__(self):
-        super().__init__()
+TARGET_SIZE = 112  # <-- Đã đổi thành 112
+CHANNELS = 1       # <-- Ảnh xám (Grayscale)
+
+# Tỷ lệ chia tập dữ liệu
+TRAIN_SIZE = 0.8
+VAL_SIZE = 0.1
+TEST_SIZE = 0.1
+# =====================================================================
+
+def process_merged_dataset():
+    print(f"Đang kiểm tra thư mục: {DATASET_PATH} ...\n")
+    
+    if not os.path.exists(DATASET_PATH):
+        print(f" LỖI: Không tìm thấy đường dẫn {DATASET_PATH}")
+        return
+
+    # Lấy danh sách các class và lọc đúng 7 class
+    class_names = sorted([d for d in os.listdir(DATASET_PATH) if os.path.isdir(os.path.join(DATASET_PATH, d))])
+    
+    # Kiểm tra nếu thừa/thiếu class
+    if len(class_names) != 7:
+        print(f" CẢNH BÁO: Tìm thấy {len(class_names)} thư mục, nhưng bạn yêu cầu 7 class.")
+        print(f" Danh sách hiện có: {class_names}")
+
+    all_images = []
+    all_labels = []
+
+    print("=== BẮT ĐẦU ĐỌC DỮ LIỆU (GRAYSCALE 112x112) ===")
+    for class_index, class_name in enumerate(class_names):
+        class_path = os.path.join(DATASET_PATH, class_name)
+        image_files = os.listdir(class_path)
         
-        # 1. Cấu hình Model
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = PAttLite(num_classes=8)
+        count_per_class = 0
+        for img_name in image_files:
+            img_path = os.path.join(class_path, img_name)
+            
+            # 1. Đọc ảnh Grayscale trực tiếp
+            image = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+            if image is None:
+                continue
+            
+            # 2. Resize về 112x112
+            image = cv2.resize(image, (TARGET_SIZE, TARGET_SIZE))
+            
+            # 3. Thêm chiều channel (112, 112) -> (112, 112, 1)
+            image = np.expand_dims(image, axis=-1)
+            
+            all_images.append(image)
+            all_labels.append(class_index)
+            count_per_class += 1
+            
+        print(f"  - Thư mục '{class_name}': {count_per_class} ảnh.")
+
+    X = np.array(all_images, dtype='uint8') # Lưu uint8 để file h5 nhẹ hơn
+    y = np.array(all_labels)
+    print(f"\n -> Tổng cộng đọc được: {len(X)} ảnh.")
+    print(f" -> Kích thước mảng X: {X.shape}") # Sẽ có dạng (N, 112, 112, 1)
+
+    if len(X) == 0:
+        print("LỖI: Không đọc được ảnh nào!")
+        return
+
+    # 3. Chia dữ liệu
+    print(f"\nĐang chia dữ liệu...")
+    X_train, X_temp, y_train, y_temp = train_test_split(
+        X, y, test_size=(1 - TRAIN_SIZE), random_state=42, stratify=y
+    )
+    
+    X_val, X_test, y_val, y_test = train_test_split(
+        X_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp
+    )
+
+    print(f"  + Tập Train: {len(X_train)} ảnh")
+    print(f"  + Tập Valid: {len(X_val)} ảnh")
+    print(f"  + Tập Test:  {len(X_test)} ảnh")
+
+    # 4. Lưu ra file h5
+    print(f"\nĐang đóng gói và lưu vào file {OUTPUT_H5_FILE}...")
+    with h5py.File(OUTPUT_H5_FILE, 'w') as hf:
+        hf.create_dataset('X_train', data=X_train, compression="gzip")
+        hf.create_dataset('y_train', data=y_train)
+        hf.create_dataset('X_val', data=X_val, compression="gzip")
+        hf.create_dataset('y_val', data=y_val)
+        hf.create_dataset('X_test', data=X_test, compression="gzip")
+        hf.create_dataset('y_test', data=y_test)
         
-        model_path = 'PAtt_Lite_V2_PyTorch_Final.pth'
-        #model_path = 'checkpoints/best_phase_2.pth'
-        try:
-            self.model.load_state_dict(torch.load(model_path, map_location=self.device))
-            self.model.to(self.device)
-            self.model.eval()
-            print("Model loaded!")
-        except Exception as e:
-            print(f"Lỗi load model: {e}")
+    print(f"--- HOÀN TẤT! File lưu tại: {os.path.abspath(OUTPUT_H5_FILE)} ---")
 
-        self.class_names = ['Anger', 'Contempt', 'Disgust', 'Fear', 
-                            'Happy', 'Neutral', 'Sad', 'Surprise']
-
-        # --- CẤU HÌNH SMOOTHING ---
-        # Lưu xác suất của 10 frame gần nhất
-        self.history_size = 10 
-        self.prob_history = deque(maxlen=self.history_size)
-        # --------------------------
-
-        # 2. Preprocessing
-        self.transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-
-        self.capture = cv2.VideoCapture(0)
-        self.initUI()
-
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_frame)
-        self.timer.start(30)
-
-    def initUI(self):
-        self.setWindowTitle('PAttLite V2 - Real-time Smoothing')
-        self.setGeometry(100, 100, 800, 750)
-
-        layout = QVBoxLayout()
-
-        self.video_label = QLabel()
-        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setStyleSheet("background: black; border: 3px solid #333;")
-        layout.addWidget(self.video_label)
-
-        self.result_label = QLabel('Đang phân tích...')
-        self.result_label.setFont(QFont('Arial', 22, QFont.Weight.Bold))
-        self.result_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.result_label.setStyleSheet("color: #00FF00; background-color: #222; padding: 10px; border-radius: 5px;")
-        layout.addWidget(self.result_label)
-
-        self.btn_quit = QPushButton('Thoát')
-        self.btn_quit.setFixedHeight(40)
-        self.btn_quit.clicked.connect(self.close)
-        layout.addWidget(self.btn_quit)
-
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
-
-    def update_frame(self):
-        ret, frame = self.capture.read()
-        if not ret: return
-
-        frame = cv2.flip(frame, 1)
-
-        # Dự đoán với Smoothing
-        label, confidence = self.predict_emotion_smooth(frame)
-
-        # Vẽ lên màn hình
-        color = (0, 255, 0) if label != 'Neutral' else (255, 255, 255)
-        cv2.putText(frame, f"{label} ({confidence:.1f}%)", (30, 60), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
-
-        self.result_label.setText(f"{label} - {confidence:.1f}%")
-
-        # Chuyển đổi hiển thị PyQt
-        rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_image.shape
-        qt_img = QImage(rgb_image.data, w, h, ch * w, QImage.Format.Format_RGB888)
-        self.video_label.setPixmap(QPixmap.fromImage(qt_img).scaled(720, 480, Qt.AspectRatioMode.KeepAspectRatio))
-
-    def predict_emotion_smooth(self, frame):
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(rgb_frame)
-        img_tensor = self.transform(pil_img).unsqueeze(0).to(self.device)
-
-        with torch.no_grad():
-            outputs = self.model(img_tensor)
-            # Lấy xác suất (Softmax) thay vì lấy luôn argmax
-            probabilities = F.softmax(outputs, dim=1).cpu().numpy()[0]
-
-        # Thêm xác suất hiện tại vào hàng đợi history
-        self.prob_history.append(probabilities)
-
-        # Tính trung bình cộng xác suất của các frame trong history
-        avg_probabilities = np.mean(self.prob_history, axis=0)
-        
-        # Lấy nhãn có xác suất trung bình cao nhất
-        pred_idx = np.argmax(avg_probabilities)
-        confidence = avg_probabilities[pred_idx] * 100
-
-        return self.class_names[pred_idx], confidence
-
-    def closeEvent(self, event):
-        self.capture.release()
-        event.accept()
-
-if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    gui = EmotionCameraGUI()
-    gui.show()
-    sys.exit(app.exec())
+if __name__ == "__main__":
+    process_merged_dataset()
