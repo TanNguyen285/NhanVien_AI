@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Đăng nhập nhân viên</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="login-wrapper">
+        <div class="login-card">
+            <h2>Đăng nhập nhân viên</h2>
+            {% if error %}
+            <div class="login-error">{{ error }}</div>
+            {% endif %}
+            <form method="post" action="{{ url_for('login') }}">
+                <label>Tên đăng nhập</label>
+                <input type="text" name="username" required autofocus>
+                <label>Mật khẩu</label>
+                <input type="password" name="password" required>
+                <button type="submit" class="btn btn-primary">Đăng nhập</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
